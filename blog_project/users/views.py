@@ -15,6 +15,10 @@ from .serializers import (
 )
 from .permissions import IsAdminUser, IsAuthorOrAdmin
 from .utils import success_response, error_response, get_tokens_for_user, send_reset_email_async
+from django.contrib.auth import get_user_model
+
+# this will create the user model here to dirctly talk to db
+User = get_user_model()
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
@@ -70,6 +74,7 @@ class ChangeRoleView(APIView):
             return error_response("Role change failed.", serializer.errors)
 
         serializer.save()
+        user.refresh_from_db()
         return success_response(
             data=UserAdminSerializer(user).data,
             message=f"{user.username}'s role changed to '{user.role}'."
@@ -99,8 +104,12 @@ class TokenRefreshView(APIView):
         if not refresh_token:
             return error_response("refresh_token is required.")
         try:
-            token = RefreshToken(refresh_token)
-            return success_response(data={'access_token': str(token.access_token)})
+            old_token = RefreshToken(refresh_token)
+            user_id = old_token['user_id']
+            user = User.objects.get(id=user_id)
+            old_token.blacklist()
+            token = RefreshToken.for_user(user)
+            return success_response(data={'access_token': str(token.access_token), 'refresh_token' : str(token)})
         except TokenError:
             return error_response("Invalid or expired refresh token.", status_code=status.HTTP_401_UNAUTHORIZED)
         
@@ -174,8 +183,10 @@ class UserDetailView(APIView):
 
     def get(self, request, pk):
         user = self.get_object(pk)
-        if request.user.is_admin_user() or request.user.pk == user.pk:
+        if request.user.is_admin_user():
             serializer = UserAdminSerializer(user)
+        elif  request.user.pk == user.pk:
+            serializer = UserProfileSerializer(user)
         else:
             serializer = UserPublicSerializer(user)
         return success_response(data=serializer.data)
@@ -237,7 +248,9 @@ class SubscribeView(APIView):
 
     def delete(self, request, author_id):
         author   = self.get_author(author_id)
-        deleted = Subscription.objects.filter(subscriber=request.user, author=author).delete()
+        deleted,_ = Subscription.objects.filter(subscriber=request.user, author=author).delete()
+        # print(Subscription.objects.filter(subscriber=request.user, author=author))
+        # print(deleted)
         if not deleted:
             return error_response("You are not subscribed to this author.", status_code=status.HTTP_404_NOT_FOUND)
         return success_response(message=f"Unsubscribed from {author.username}.")
