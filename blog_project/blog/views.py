@@ -66,6 +66,12 @@ class TopicDetailView(APIView):
 
 
 class BlogListCreateView(APIView):
+    
+    def get_authenticators(self):
+        if self.request.method == 'GET':
+            return []
+        return super().get_authenticators()
+    
     def get_permissions(self):
         if self.request.method == 'GET':
             return [AllowAny()]
