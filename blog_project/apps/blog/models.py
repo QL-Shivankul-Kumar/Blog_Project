@@ -1,8 +1,8 @@
 from django.db import models
-from django.conf import settings          # ← used for AUTH_USER_MODEL
+from django.conf import settings         
 from django.utils import timezone
 from django.utils.text import slugify
-from users.models import TimestampMixin   # ← import shared mixin from users
+from apps.users.models import TimestampMixin  
 from django.db.models import Count
 
 class TopicManager(models.Manager):
@@ -98,19 +98,15 @@ class Blog(TimestampMixin):
     def __str__(self):
         return f"{self.title} ({'Published' if self.is_published else 'Draft'})"
 
-    def publish(self):
-        self.is_published = True
-        if not self.published_at:
-            self.published_at = timezone.now()
+    # def publish(self):
+    #     self.is_published = True
+    #     if not self.published_at:
+    #         self.published_at = timezone.now()
 
-    def unpublish(self):
-        self.is_published = False
+    # def unpublish(self):
+    #     self.is_published = False
 
     def increment_view(self):
-        """
-        Atomic view count increment. F() runs in SQL, not Python.
-        Prevents race condition where two requests read the same value simultaneously.
-        """
         Blog.objects.filter(pk=self.pk).update(view_count=models.F('view_count') + 1)
 
 class CommentManager(models.Manager):
@@ -142,6 +138,6 @@ class Comment(TimestampMixin):
         username = self.user.username if self.user else "Deleted User"
         return f"Comment by {username} on '{self.blog.title}'"
 
-    def soft_delete(self):
-        self.is_deleted = True
-        self.save(update_fields=['is_deleted', 'updated_at'])
+    # def soft_delete(self):
+    #     self.is_deleted = True
+    #     self.save(update_fields=['is_deleted', 'updated_at'])

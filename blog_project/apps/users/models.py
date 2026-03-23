@@ -2,7 +2,7 @@ from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
 from django.utils import timezone
 import uuid
-from django.core.exceptions import ValidationError
+from rest_framework_simplejwt.tokens import RefreshToken
 
 class TimestampMixin(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
@@ -29,21 +29,39 @@ class UserManager(BaseUserManager):
         extra_fields.setdefault('role', 'admin')
         extra_fields.setdefault('is_active', True)
         return self.create_user(email, username, password, **extra_fields)
-
-    def get_by_email(self, email):
-        """Fetch one active user by email. Used in login + forgot-password."""
-        return self.get(email=email.lower(), is_active=True)
-
+    
     def get_all_users(self, role=None):
-        """List all active users. Optional role filter. Used in GET /api/users/"""
         qs = self.filter(is_active=True)
         if role:
             qs = qs.filter(role=role)
         return qs
-
+    
     def get_authors(self):
         return self.filter(role='author', is_active=True)
-
+    
+    def authenticate_user(self, email, password):
+        try:
+            user = self.get(email=email.lower(), is_active=True)
+        except self.model.DoesNotExist:
+            return None
+        if not user.check_password(password):
+            return None
+        return user
+    
+    def generate_tokens(self, user):
+        refresh = RefreshToken.for_user(user)
+        refresh.access_token['role']  = user.role
+        refresh.access_token['email'] = user.email
+        return {
+            'access_token':  str(refresh.access_token),
+            'refresh_token': str(refresh),
+        }
+    
+    def rotate_refresh_token(self, raw_refresh_token):
+        old   = RefreshToken(raw_refresh_token)
+        user  = self.get(id=old['user_id'])
+        old.blacklist()
+        return self.generate_tokens(user)
 
 class User(AbstractBaseUser, PermissionsMixin, TimestampMixin):
 
@@ -65,30 +83,11 @@ class User(AbstractBaseUser, PermissionsMixin, TimestampMixin):
     objects = UserManager()
 
     USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['username']
-
+    
     class Meta:
         db_table = 'users'
         ordering = ['-created_at']
 
-    def __str__(self):
-        return f"{self.username} ({self.role})"
-    
-    def is_author(self):
-        return self.role == self.Role.AUTHOR
-    
-    def is_admin_user(self):
-        return self.role == self.Role.ADMIN or self.is_superuser
-    
-    def has_perm(self, perm, obj=None):
-        if self.is_active and self.is_superuser:
-            return True
-        return super().has_perm(perm, obj)
-
-    def has_module_perms(self, app_label):
-        if self.is_active and self.is_superuser:
-            return True
-        return super().has_module_perms(app_label)
 
 class PasswordResetToken(models.Model):
     user       = models.ForeignKey(User, on_delete=models.CASCADE, related_name='password_reset_tokens')
@@ -99,20 +98,6 @@ class PasswordResetToken(models.Model):
 
     class Meta:
         db_table = 'password_reset_tokens'
-
-    def save(self, *args, **kwargs):
-        if not self.expires_at:
-            self.expires_at = timezone.now() + timezone.timedelta(minutes=15)
-        super().save(*args, **kwargs)
-
-    def is_valid(self):
-        """Valid only if not used AND not expired."""
-        return not self.is_used and timezone.now() < self.expires_at
-
-    def mark_used(self):
-        # better for the partial updatee save
-        self.is_used = True
-        self.save(update_fields=['is_used'])
 
     def __str__(self):
         return f"ResetToken({self.user.email}, used={self.is_used})"
@@ -129,24 +114,12 @@ class SubscriptionManager(models.Manager):
         return self.filter(subscriber=subscriber, author=author).exists()
 
     def get_subscriber_emails(self, author):
-        """
-        Flat list of subscriber emails — used when notifying on blog publish.
-        flat=True returns ['a@b.com', 'c@d.com'] not [('a@b.com',), ...]
-        """
         return list(
             self.filter(author=author)
             .values_list('subscriber__email', flat=True)
         )
 
 class Subscription(models.Model):
-    """
-    Junction table: User (subscriber) ↔ User (author).
-    Lives in users/ — purely about the relationship between two users.
-    No reference to Blog or Topic at all.
-
-    unique_together → prevents duplicate subscriptions → prevents spam emails
-    clean()         → prevents self-subscription
-    """
     subscriber    = models.ForeignKey(User, on_delete=models.CASCADE, related_name='subscriptions')
     author        = models.ForeignKey(User, on_delete=models.CASCADE, related_name='subscribers')
     subscribed_at = models.DateTimeField(auto_now_add=True)
@@ -156,14 +129,6 @@ class Subscription(models.Model):
     class Meta:
         db_table        = 'subscriptions'
         unique_together = ('subscriber', 'author')
-
-    def clean(self):
-        if self.subscriber_id == self.author_id:
-            raise ValidationError("You cannot subscribe to yourself.")
-
-    def save(self, *args, **kwargs):
-        self.clean()
-        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.subscriber.username} → {self.author.username}"
